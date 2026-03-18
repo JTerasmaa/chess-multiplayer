@@ -371,6 +371,10 @@ body {
     }
     #mp-color-badge.white { background: #f0d9b5; color: #312e2b; }
     #mp-color-badge.black { background: #2a1e0e; color: #f0d9b5; border: 1px solid #8b6347; }
+    #mp-color-pick { display: flex; align-items: center; gap: 5px; }
+    .mp-color-btn { background: #3d2b1f; border: 1px solid #5a3f2d; color: #9a7d62; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; font-family: inherit; }
+    .mp-color-btn.active-color { border-color: #f0d9b5; color: #f0d9b5; background: #5a3f2d; }
+    #mp-color-pick.locked { opacity: 0.5; pointer-events: none; }
 
   </style>
 </head>
@@ -1057,6 +1061,11 @@ renderAll();
       <span style="color:#9a7d62">Your ID:</span>
       <span id="mp-myid" title="Click to copy">...</span>
     </div>
+    <div id="mp-color-pick">
+      <span style="color:#9a7d62;font-size:11px">Play as:</span>
+      <button id="mp-pick-white" class="mp-color-btn active-color">⬜ White</button>
+      <button id="mp-pick-black" class="mp-color-btn">⬛ Black</button>
+    </div>
     <span id="mp-color-badge" class="white" style="display:none"></span>
     <input id="mp-joinid" placeholder="Paste opponent ID..." />
     <button id="mp-connect-btn">Connect</button>
@@ -1089,21 +1098,18 @@ function initPeer() {
   peer.on('open', id => {
     const el = document.getElementById('mp-myid');
     if (el) el.textContent = id;
-    mpLog('Ready — share your ID to play as White', '');
-    isHost = true;
-    myColor = 'w';
+    mpLog('Ready — pick your color, then share your ID', '');
     updateColorBadge();
   });
 
   peer.on('connection', c => {
     conn = c;
-    setupConn();
-    mpLog('Opponent connected! You are White.', 'connected');
     isHost = true;
-    myColor = 'w';
+    // Lock color pick
+    document.getElementById('mp-color-pick').classList.add('locked');
+    setupConn();
+    mpLog('Opponent connected! You are ' + (myColor === 'w' ? 'White' : 'Black') + '.', 'connected');
     updateColorBadge();
-    // Send current board state
-    sendState();
   });
 
   peer.on('error', err => {
@@ -1117,24 +1123,38 @@ function connectTo(id) {
   mpLog('Connecting to ' + id + '...', '');
   conn = peer.connect(id.trim().toUpperCase(), { reliable: true });
   isHost = false;
-  myColor = 'b';
-  updateColorBadge();
+  // joiner's color will be set when host sends handshake
   setupConn();
 }
 
 function setupConn() {
   conn.on('open', () => {
-    mpReady = true;
-    mpLog('Connected! You are ' + (myColor === 'w' ? 'White' : 'Black'), 'connected');
-    updateColorBadge();
-    if (!isHost) {
-      // Joiner flips board
-      flipped = true;
+    if (isHost) {
+      // Host sends color handshake + board state
+      conn.send({ type: 'handshake', hostColor: myColor });
+      sendState();
+      mpReady = true;
+      mpLog('Connected! You are ' + (myColor === 'w' ? 'White' : 'Black'), 'connected');
+      // Flip board if playing black
+      flipped = (myColor === 'b');
       renderAll();
     }
+    // joiner waits for handshake before setting mpReady
   });
 
   conn.on('data', data => {
+    if (data.type === 'handshake') {
+      // Joiner receives host's color and takes the opposite
+      myColor = data.hostColor === 'w' ? 'b' : 'w';
+      isHost = false;
+      mpReady = true;
+      mpLog('Connected! You are ' + (myColor === 'w' ? 'White' : 'Black'), 'connected');
+      updateColorBadge();
+      // Flip board if playing black
+      flipped = (myColor === 'b');
+      renderAll();
+      return;
+    }
     if (data.type === 'move') {
       // Apply the opponent's move
       const m = data.move;
@@ -1145,7 +1165,7 @@ function setupConn() {
       legalMoves = [];
       renderAll();
     } else if (data.type === 'state') {
-      // Full state sync from host
+      // Full state sync from host (joiner receives this)
       game = new Chess(null);
       game.board = data.board;
       game.turn = data.turn;
@@ -1244,9 +1264,27 @@ resetGame = function() {
 
 // UI wiring (after DOM ready)
 document.addEventListener('DOMContentLoaded', () => {
+  // Color pick buttons
+  const pickWhite = document.getElementById('mp-pick-white');
+  const pickBlack = document.getElementById('mp-pick-black');
+  pickWhite.addEventListener('click', () => {
+    myColor = 'w'; isHost = true;
+    pickWhite.classList.add('active-color');
+    pickBlack.classList.remove('active-color');
+  });
+  pickBlack.addEventListener('click', () => {
+    myColor = 'b'; isHost = true;
+    pickBlack.classList.add('active-color');
+    pickWhite.classList.remove('active-color');
+  });
+
   document.getElementById('mp-connect-btn').addEventListener('click', () => {
     const id = document.getElementById('mp-joinid').value.trim();
-    if (id) connectTo(id);
+    if (id) {
+      // Lock color pick once connecting
+      document.getElementById('mp-color-pick').classList.add('locked');
+      connectTo(id);
+    }
   });
   document.getElementById('mp-copy-btn').addEventListener('click', () => {
     const id = document.getElementById('mp-myid').textContent;
